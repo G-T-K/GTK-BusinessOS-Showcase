@@ -1,0 +1,963 @@
+// GTK BusinessOS — core data model
+// Every business-owned table carries a businessId to guarantee tenant isolation.
+// All monetary fields follow the pattern: amount (original currency) + currency +
+// exchangeRate + baseAmount (converted at time of transaction), so historical
+// transactions never get corrupted by later exchange-rate changes.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ─────────────────────────────────────────────────────────────
+// TENANCY, USERS & ACCESS
+// ─────────────────────────────────────────────────────────────
+
+model Business {
+  id           String        @id @default(cuid())
+  name         String
+  slug         String        @unique
+  address      String?
+  phone        String?
+  email        String?
+  website      String?
+  logo         Bytes?        @db.ByteA
+  logoMimeType String?
+  baseCurrency Currency      @default(USD)
+  timezone     String        @default("Africa/Harare")
+  trialEndsAt  DateTime?
+  subscription Subscription?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  memberships              Membership[]
+  customers                Customer[]
+  products                 Product[]
+  categories               ProductCategory[]
+  suppliers                Supplier[]
+  quotations               Quotation[]
+  invoices                 Invoice[]
+  receipts                 Receipt[]
+  payments                 Payment[]
+  purchases                Purchase[]
+  expenses                 Expense[]
+  expenseCategories        ExpenseCategory[]
+  stockMovements           StockMovement[]
+  auditLogs                AuditLog[]
+  exchangeRates            ExchangeRate[]
+  taxRates                 TaxRate[]
+  purchaseOrders           PurchaseOrder[]
+  supplierBills            SupplierBill[]
+  supplierPayments         SupplierPayment[]
+  financialAccounts        FinancialAccount[]
+  financialReconciliations FinancialReconciliation[]
+  financialTransfers       FinancialTransfer[]
+  departments              Department[]
+  employees                Employee[]
+  salaryComponents         SalaryComponent[]
+  statutoryRules           StatutoryRule[]
+  payrollRuns              PayrollRun[]
+}
+
+enum PlanTier {
+  STARTER
+  BUSINESS
+  PROFESSIONAL
+  ENTERPRISE
+}
+
+model Subscription {
+  id          String    @id @default(cuid())
+  business    Business  @relation(fields: [businessId], references: [id])
+  businessId  String    @unique
+  plan        PlanTier  @default(STARTER)
+  active      Boolean   @default(true)
+  startedAt   DateTime  @default(now())
+  renewsAt    DateTime?
+  cancelledAt DateTime?
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String
+  passwordHash String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  memberships Membership[]
+  auditLogs   AuditLog[]
+  employees   Employee[]
+}
+
+enum Role {
+  OWNER
+  ADMINISTRATOR
+  MANAGER
+  SALESPERSON
+  CASHIER
+  INVENTORY_OFFICER
+  FINANCE
+  PAYROLL_ADMIN
+  EMPLOYEE
+}
+
+// A user can belong to more than one business (e.g. a bookkeeper across clients),
+// each membership scoped to one role within that one business.
+model Membership {
+  id         String   @id @default(cuid())
+  user       User     @relation(fields: [userId], references: [id])
+  userId     String
+  business   Business @relation(fields: [businessId], references: [id])
+  businessId String
+  role       Role
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now())
+
+  @@unique([userId, businessId])
+  @@index([businessId])
+}
+
+model Department {
+  id         String     @id @default(cuid())
+  business   Business   @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  businessId String
+  name       String
+  active     Boolean    @default(true)
+  employees  Employee[]
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  @@unique([businessId, name])
+  @@index([businessId, active])
+}
+
+enum EmploymentType {
+  PERMANENT
+  CONTRACT
+  TEMPORARY
+  CASUAL
+  INTERN
+}
+
+enum EmploymentStatus {
+  ACTIVE
+  INACTIVE
+  TERMINATED
+}
+
+model Employee {
+  id                  String                    @id @default(cuid())
+  business            Business                  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  businessId          String
+  user                User?                     @relation(fields: [userId], references: [id], onDelete: SetNull)
+  userId              String?
+  department          Department?               @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  departmentId        String?
+  employeeNumber      String
+  fullName            String
+  nationalId          String?
+  phone               String?
+  email               String?
+  address             String?
+  jobTitle            String
+  employmentDate      DateTime                  @db.Date
+  employmentType      EmploymentType
+  basicSalary         Decimal                   @db.Decimal(18, 2)
+  salaryCurrency      String                    @default("USD")
+  bankName            String?
+  bankAccountName     String?
+  bankAccountNumber   String?
+  mobileMoneyProvider String?
+  mobileMoneyNumber   String?
+  taxNumber           String?
+  nssaNumber          String?
+  status              EmploymentStatus          @default(ACTIVE)
+  salaryComponents    EmployeeSalaryComponent[]
+  payrollLines        PayrollLine[]
+  payrollCorrections  PayrollCorrection[]
+  createdAt           DateTime                  @default(now())
+  updatedAt           DateTime                  @updatedAt
+
+  @@unique([businessId, employeeNumber])
+  @@unique([businessId, userId])
+  @@index([userId])
+  @@index([businessId, status, fullName])
+  @@index([businessId, departmentId])
+}
+
+enum SalaryComponentKind {
+  EARNING
+  OTHER_DEDUCTION
+}
+
+enum SalaryComponentMode {
+  FIXED
+  VARIABLE
+}
+
+model SalaryComponent {
+  id         String                    @id @default(cuid())
+  business   Business                  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  businessId String
+  code       String
+  name       String
+  kind       SalaryComponentKind
+  mode       SalaryComponentMode
+  active     Boolean                   @default(true)
+  createdAt  DateTime                  @default(now())
+  updatedAt  DateTime                  @updatedAt
+  employees  EmployeeSalaryComponent[]
+
+  @@unique([businessId, code])
+  @@index([businessId, active, kind])
+}
+
+model EmployeeSalaryComponent {
+  id            String          @id @default(cuid())
+  employee      Employee        @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  employeeId    String
+  component     SalaryComponent @relation(fields: [componentId], references: [id], onDelete: Restrict)
+  componentId   String
+  amount        Decimal         @db.Decimal(18, 2)
+  effectiveFrom DateTime        @db.Date
+  effectiveTo   DateTime?       @db.Date
+  createdAt     DateTime        @default(now())
+
+  @@index([employeeId, effectiveFrom, effectiveTo])
+  @@index([componentId])
+}
+
+enum StatutoryCalculation {
+  PERCENTAGE
+  PROGRESSIVE
+}
+
+enum StatutoryBasis {
+  BASIC
+  GROSS
+  PAYE
+}
+
+model StatutoryRule {
+  id            String               @id @default(cuid())
+  business      Business             @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  businessId    String
+  code          String
+  name          String
+  currency      String
+  calculation   StatutoryCalculation
+  basis         StatutoryBasis
+  ratePercent   Decimal?             @db.Decimal(9, 6)
+  bands         Json?
+  effectiveFrom DateTime             @db.Date
+  effectiveTo   DateTime?            @db.Date
+  active        Boolean              @default(true)
+  createdAt     DateTime             @default(now())
+
+  @@unique([businessId, code, currency, effectiveFrom])
+  @@index([businessId, active, currency, effectiveFrom, effectiveTo])
+}
+
+enum PayrollRunStatus {
+  DRAFT
+  APPROVED
+  PAID
+}
+
+enum PayrollRunKind {
+  REGULAR
+  ADJUSTMENT
+}
+
+enum PayrollLineItemKind {
+  EARNING
+  STATUTORY_DEDUCTION
+  OTHER_DEDUCTION
+}
+
+model PayrollRun {
+  id                  String              @id @default(cuid())
+  business            Business            @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  businessId          String
+  adjustmentFor       PayrollRun?         @relation("PayrollAdjustments", fields: [adjustmentForId], references: [id], onDelete: Restrict)
+  adjustmentForId     String?
+  adjustments         PayrollRun[]        @relation("PayrollAdjustments")
+  reference           String
+  year                Int
+  month               Int
+  currency            String
+  calculationHash     String
+  kind                PayrollRunKind      @default(REGULAR)
+  status              PayrollRunStatus    @default(DRAFT)
+  payDate             DateTime?           @db.Date
+  employeeCount       Int                 @default(0)
+  grossTotal          Decimal             @default(0) @db.Decimal(18, 2)
+  statutoryTotal      Decimal             @default(0) @db.Decimal(18, 2)
+  otherDeductionTotal Decimal             @default(0) @db.Decimal(18, 2)
+  netTotal            Decimal             @default(0) @db.Decimal(18, 2)
+  createdById         String
+  approvedById        String?
+  paidById            String?
+  approvedAt          DateTime?
+  paidAt              DateTime?
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+  lines               PayrollLine[]
+  corrections         PayrollCorrection[]
+
+  @@unique([businessId, reference])
+  @@index([businessId, year, month, status])
+  @@index([adjustmentForId])
+}
+
+model PayrollLine {
+  id                  String              @id @default(cuid())
+  payrollRun          PayrollRun          @relation(fields: [payrollRunId], references: [id], onDelete: Cascade)
+  payrollRunId        String
+  employee            Employee            @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  employeeId          String
+  employeeNumber      String
+  employeeName        String
+  departmentName      String?
+  jobTitle            String
+  basicSalary         Decimal             @db.Decimal(18, 2)
+  gross               Decimal             @db.Decimal(18, 2)
+  statutoryDeductions Decimal             @db.Decimal(18, 2)
+  otherDeductions     Decimal             @db.Decimal(18, 2)
+  netPay              Decimal             @db.Decimal(18, 2)
+  items               PayrollLineItem[]
+  corrections         PayrollCorrection[]
+
+  @@unique([payrollRunId, employeeId])
+  @@index([employeeId, payrollRunId])
+}
+
+model PayrollLineItem {
+  id            String              @id @default(cuid())
+  payrollLine   PayrollLine         @relation(fields: [payrollLineId], references: [id], onDelete: Cascade)
+  payrollLineId String
+  kind          PayrollLineItemKind
+  code          String
+  name          String
+  amount        Decimal             @db.Decimal(18, 2)
+  ruleSnapshot  Json?
+  componentId   String?
+  isEditable    Boolean             @default(false)
+
+  @@index([payrollLineId, kind])
+}
+
+enum PayrollCorrectionStatus {
+  DRAFT
+  APPROVED
+  PAID
+}
+
+model PayrollCorrection {
+  id              String                  @id @default(cuid())
+  payrollRun      PayrollRun              @relation(fields: [payrollRunId], references: [id], onDelete: Restrict)
+  payrollRunId    String
+  payrollLine     PayrollLine             @relation(fields: [payrollLineId], references: [id], onDelete: Restrict)
+  payrollLineId   String
+  employee        Employee                @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  employeeId      String
+  reason          String
+  earningsDelta   Decimal                 @default(0) @db.Decimal(18, 2)
+  deductionsDelta Decimal                 @default(0) @db.Decimal(18, 2)
+  status          PayrollCorrectionStatus @default(DRAFT)
+  createdById     String
+  approvedById    String?
+  paidById        String?
+  createdAt       DateTime                @default(now())
+  approvedAt      DateTime?
+  paidAt          DateTime?
+
+  @@index([payrollRunId, employeeId, status])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  business   Business @relation(fields: [businessId], references: [id])
+  businessId String
+  user       User?    @relation(fields: [userId], references: [id])
+  userId     String?
+  action     String // e.g. "invoice.created", "payment.recorded"
+  entityType String
+  entityId   String
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  @@index([businessId, createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────
+// CURRENCY
+// ─────────────────────────────────────────────────────────────
+
+enum Currency {
+  USD
+  ZIG
+  ZAR
+}
+
+// Daily/point-in-time rates relative to the business's base currency.
+model ExchangeRate {
+  id          String   @id @default(cuid())
+  business    Business @relation(fields: [businessId], references: [id])
+  businessId  String
+  currency    Currency
+  rateToBase  Decimal  @db.Decimal(18, 6) // 1 unit of `currency` = rateToBase units of base currency
+  effectiveAt DateTime @default(now())
+
+  @@index([businessId, currency, effectiveAt])
+}
+
+// ─────────────────────────────────────────────────────────────
+// CUSTOMERS & DEBTORS
+// ─────────────────────────────────────────────────────────────
+
+model Customer {
+  id          String   @id @default(cuid())
+  business    Business @relation(fields: [businessId], references: [id])
+  businessId  String
+  name        String
+  phone       String?
+  email       String?
+  address     String?
+  creditLimit Decimal? @db.Decimal(18, 2)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  quotations Quotation[]
+  invoices   Invoice[]
+  receipts   Receipt[]
+  payments   Payment[]
+
+  @@index([businessId, name])
+}
+
+// ─────────────────────────────────────────────────────────────
+// INVENTORY
+// ─────────────────────────────────────────────────────────────
+
+model ProductCategory {
+  id         String    @id @default(cuid())
+  business   Business  @relation(fields: [businessId], references: [id])
+  businessId String
+  name       String
+  products   Product[]
+
+  @@unique([businessId, name])
+}
+
+model Product {
+  id             String           @id @default(cuid())
+  business       Business         @relation(fields: [businessId], references: [id])
+  businessId     String
+  category       ProductCategory? @relation(fields: [categoryId], references: [id])
+  categoryId     String?
+  sku            String?
+  name           String
+  costPrice      Decimal          @db.Decimal(18, 2)
+  sellingPrice   Decimal          @db.Decimal(18, 2)
+  quantityOnHand Decimal          @default(0) @db.Decimal(18, 3)
+  reorderLevel   Decimal          @default(0) @db.Decimal(18, 3)
+  unit           String           @default("unit") // e.g. "unit", "kg", "box"
+  active         Boolean          @default(true)
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  stockMovements     StockMovement[]
+  quotationItems     QuotationItem[]
+  invoiceItems       InvoiceItem[]
+  purchaseItems      PurchaseItem[]
+  purchaseOrderItems PurchaseOrderItem[]
+
+  @@index([businessId, name])
+  @@index([businessId, sku])
+}
+
+enum StockMovementType {
+  PURCHASE_IN
+  SALE_OUT
+  ADJUSTMENT_IN
+  ADJUSTMENT_OUT
+  RETURN_IN
+  RETURN_OUT
+}
+
+// Every change to quantityOnHand is recorded here so stock is always auditable.
+model StockMovement {
+  id         String            @id @default(cuid())
+  business   Business          @relation(fields: [businessId], references: [id])
+  businessId String
+  product    Product           @relation(fields: [productId], references: [id])
+  productId  String
+  type       StockMovementType
+  quantity   Decimal           @db.Decimal(18, 3) // always positive; direction implied by `type`
+  reference  String? // e.g. invoice or purchase id, for traceability
+  note       String?
+  createdAt  DateTime          @default(now())
+
+  @@index([businessId, productId, createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────
+// SUPPLIERS & PURCHASES
+// ─────────────────────────────────────────────────────────────
+
+model Supplier {
+  id         String   @id @default(cuid())
+  business   Business @relation(fields: [businessId], references: [id])
+  businessId String
+  name       String
+  phone      String?
+  email      String?
+  address    String?
+
+  purchases        Purchase[]
+  purchaseOrders   PurchaseOrder[]
+  bills            SupplierBill[]
+  supplierPayments SupplierPayment[]
+
+  @@index([businessId, name])
+}
+
+enum PurchaseStatus {
+  DRAFT
+  ORDERED
+  RECEIVED
+  PARTIALLY_RECEIVED
+  BILLED
+  PAID
+  CANCELLED
+}
+
+model TaxRate {
+  id         String   @id @default(cuid())
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  businessId String
+  code       String
+  name       String
+  rate       Decimal  @db.Decimal(18, 2)
+  active     Boolean  @default(true)
+  isDefault  Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  purchases          Purchase[]
+  purchaseItems      PurchaseItem[]
+  purchaseOrders     PurchaseOrder[]
+  purchaseOrderItems PurchaseOrderItem[]
+
+  @@unique([businessId, code])
+  @@index([businessId, active])
+}
+
+enum PurchaseOrderStatus {
+  DRAFT
+  ORDERED
+  PARTIALLY_RECEIVED
+  RECEIVED
+  CANCELLED
+}
+
+model PurchaseOrder {
+  id               String              @id @default(cuid())
+  business         Business            @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  businessId       String
+  supplier         Supplier?           @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  supplierId       String?
+  taxRate          TaxRate?            @relation(fields: [taxRateId], references: [id], onDelete: Restrict)
+  taxRateId        String?
+  reference        String?
+  status           PurchaseOrderStatus @default(DRAFT)
+  currency         Currency
+  exchangeRate     Decimal             @db.Decimal(18, 6)
+  subtotal         Decimal             @default(0) @db.Decimal(18, 2)
+  taxAmount        Decimal             @default(0) @db.Decimal(18, 2)
+  totalAmount      Decimal             @db.Decimal(18, 2)
+  totalBaseAmount  Decimal             @db.Decimal(18, 2)
+  orderDate        DateTime            @default(now())
+  expectedDelivery DateTime?
+  createdAt        DateTime            @default(now())
+
+  items     PurchaseOrderItem[]
+  purchases Purchase[]
+
+  @@unique([businessId, reference])
+  @@index([businessId, status])
+}
+
+model PurchaseOrderItem {
+  id              String        @id @default(cuid())
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  purchaseOrderId String
+  product         Product       @relation(fields: [productId], references: [id])
+  productId       String
+  quantity        Decimal       @db.Decimal(18, 3)
+  unitCost        Decimal       @db.Decimal(18, 2)
+  taxRate         TaxRate?      @relation(fields: [taxRateId], references: [id], onDelete: Restrict)
+  taxRateId       String?
+  taxAmount       Decimal       @default(0) @db.Decimal(18, 2)
+  lineTotal       Decimal       @db.Decimal(18, 2)
+}
+
+model Purchase {
+  id              String         @id @default(cuid())
+  business        Business       @relation(fields: [businessId], references: [id])
+  businessId      String
+  purchaseOrder   PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id], onDelete: SetNull)
+  purchaseOrderId String?
+  supplier        Supplier?      @relation(fields: [supplierId], references: [id])
+  supplierId      String?
+  taxRate         TaxRate?       @relation(fields: [taxRateId], references: [id], onDelete: Restrict)
+  taxRateId       String?
+  status          PurchaseStatus @default(DRAFT)
+  currency        Currency
+  exchangeRate    Decimal        @db.Decimal(18, 6)
+  subtotal        Decimal        @default(0) @db.Decimal(18, 2)
+  taxAmount       Decimal        @default(0) @db.Decimal(18, 2)
+  totalAmount     Decimal        @db.Decimal(18, 2) // in `currency`
+  totalBaseAmount Decimal        @db.Decimal(18, 2) // converted to business.baseCurrency
+  orderedAt       DateTime       @default(now())
+  receivedAt      DateTime?
+  dueDate         DateTime?
+  createdAt       DateTime       @default(now())
+
+  items         PurchaseItem[]
+  supplierBills SupplierBill[]
+
+  @@index([businessId, status])
+}
+
+model PurchaseItem {
+  id         String   @id @default(cuid())
+  purchase   Purchase @relation(fields: [purchaseId], references: [id])
+  purchaseId String
+  product    Product  @relation(fields: [productId], references: [id])
+  productId  String
+  quantity   Decimal  @db.Decimal(18, 3)
+  unitCost   Decimal  @db.Decimal(18, 2)
+  taxRate    TaxRate? @relation(fields: [taxRateId], references: [id], onDelete: Restrict)
+  taxRateId  String?
+  taxAmount  Decimal  @default(0) @db.Decimal(18, 2)
+  lineTotal  Decimal  @db.Decimal(18, 2)
+}
+
+enum SupplierBillStatus {
+  OPEN
+  PARTIALLY_PAID
+  PAID
+  CANCELLED
+}
+
+model SupplierBill {
+  id              String             @id @default(cuid())
+  business        Business           @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  businessId      String
+  supplier        Supplier           @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  supplierId      String
+  purchase        Purchase?          @relation(fields: [purchaseId], references: [id], onDelete: SetNull)
+  purchaseId      String?
+  reference       String
+  status          SupplierBillStatus @default(OPEN)
+  billDate        DateTime           @default(now())
+  dueDate         DateTime?
+  subtotal        Decimal            @default(0) @db.Decimal(18, 2)
+  taxAmount       Decimal            @default(0) @db.Decimal(18, 2)
+  totalAmount     Decimal            @db.Decimal(18, 2)
+  totalBaseAmount Decimal            @db.Decimal(18, 2)
+  paidAmount      Decimal            @default(0) @db.Decimal(18, 2)
+  createdAt       DateTime           @default(now())
+
+  payments SupplierPayment[]
+
+  @@unique([businessId, reference])
+  @@index([businessId, status])
+  @@index([supplierId, dueDate])
+}
+
+model SupplierPayment {
+  id               String            @id @default(cuid())
+  business         Business          @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  businessId       String
+  supplier         Supplier          @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  supplierId       String
+  bill             SupplierBill?     @relation(fields: [billId], references: [id], onDelete: SetNull)
+  billId           String?
+  financialAccount FinancialAccount? @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  accountId        String?
+  method           PaymentMethod
+  reference        String?
+  amount           Decimal           @db.Decimal(18, 2)
+  paidAt           DateTime          @default(now())
+  createdAt        DateTime          @default(now())
+
+  @@index([businessId, paidAt])
+  @@index([billId, paidAt])
+}
+
+// ─────────────────────────────────────────────────────────────
+// SALES PIPELINE: QUOTATION → INVOICE → PAYMENT → RECEIPT
+// ─────────────────────────────────────────────────────────────
+
+enum QuotationStatus {
+  DRAFT
+  SENT
+  ACCEPTED
+  DECLINED
+  EXPIRED
+  CONVERTED
+}
+
+model Quotation {
+  id              String          @id @default(cuid())
+  business        Business        @relation(fields: [businessId], references: [id])
+  businessId      String
+  customer        Customer        @relation(fields: [customerId], references: [id])
+  customerId      String
+  reference       String // human-readable quote number, e.g. QUO-2026-0001
+  status          QuotationStatus @default(DRAFT)
+  currency        Currency
+  exchangeRate    Decimal         @db.Decimal(18, 6)
+  totalAmount     Decimal         @db.Decimal(18, 2)
+  totalBaseAmount Decimal         @db.Decimal(18, 2)
+  validUntil      DateTime?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  items   QuotationItem[]
+  invoice Invoice?
+
+  @@unique([businessId, reference])
+  @@index([businessId, status])
+}
+
+model QuotationItem {
+  id          String    @id @default(cuid())
+  quotation   Quotation @relation(fields: [quotationId], references: [id])
+  quotationId String
+  product     Product   @relation(fields: [productId], references: [id])
+  productId   String
+  quantity    Decimal   @db.Decimal(18, 3)
+  unitPrice   Decimal   @db.Decimal(18, 2)
+  lineTotal   Decimal   @db.Decimal(18, 2)
+}
+
+enum InvoiceStatus {
+  DRAFT
+  ISSUED
+  PARTIALLY_PAID
+  PAID
+  OVERDUE
+  CANCELLED
+}
+
+model Invoice {
+  id              String        @id @default(cuid())
+  business        Business      @relation(fields: [businessId], references: [id])
+  businessId      String
+  customer        Customer      @relation(fields: [customerId], references: [id])
+  customerId      String
+  quotation       Quotation?    @relation(fields: [quotationId], references: [id])
+  quotationId     String?       @unique
+  reference       String // e.g. INV-2026-0001
+  status          InvoiceStatus @default(DRAFT)
+  currency        Currency
+  exchangeRate    Decimal       @db.Decimal(18, 6)
+  totalAmount     Decimal       @db.Decimal(18, 2) // in `currency`
+  totalBaseAmount Decimal       @db.Decimal(18, 2) // in business.baseCurrency
+  amountPaidBase  Decimal       @default(0) @db.Decimal(18, 2)
+  dueDate         DateTime?
+  issuedAt        DateTime      @default(now())
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  items    InvoiceItem[]
+  receipts Receipt[]
+  payments Payment[]
+
+  @@unique([businessId, reference])
+  @@index([businessId, status])
+  @@index([businessId, dueDate])
+}
+
+model InvoiceItem {
+  id        String  @id @default(cuid())
+  invoice   Invoice @relation(fields: [invoiceId], references: [id])
+  invoiceId String
+  product   Product @relation(fields: [productId], references: [id])
+  productId String
+  quantity  Decimal @db.Decimal(18, 3)
+  unitPrice Decimal @db.Decimal(18, 2)
+  lineTotal Decimal @db.Decimal(18, 2)
+}
+
+enum PaymentMethod {
+  CASH
+  BANK_TRANSFER
+  MOBILE_MONEY
+  CARD
+  OTHER
+}
+
+enum FinancialAccountType {
+  CASH
+  BANK
+}
+
+model FinancialAccount {
+  id             String               @id @default(cuid())
+  business       Business             @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  businessId     String
+  name           String
+  type           FinancialAccountType
+  openingBalance Decimal              @default(0) @db.Decimal(18, 2)
+  openingDate    DateTime             @default(now()) @db.Date
+  active         Boolean              @default(true)
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+
+  payments         Payment[]
+  expenses         Expense[]
+  supplierPayments SupplierPayment[]
+  reconciliations  FinancialReconciliation[]
+  transfersOut     FinancialTransfer[]       @relation("TransferFromAccount")
+  transfersIn      FinancialTransfer[]       @relation("TransferToAccount")
+
+  @@unique([businessId, name])
+  @@index([businessId, active])
+}
+
+model FinancialReconciliation {
+  id                       String           @id @default(cuid())
+  business                 Business         @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  businessId               String
+  account                  FinancialAccount @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  accountId                String
+  statementDate            DateTime         @db.Date
+  previousStatementDate    DateTime?        @db.Date
+  previousStatementBalance Decimal          @db.Decimal(18, 2)
+  statementBalance         Decimal          @db.Decimal(18, 2)
+  expectedBalance          Decimal          @db.Decimal(18, 2)
+  reconciledAt             DateTime         @default(now())
+  userId                   String?
+
+  payments     Payment[]
+  expenses     Expense[]
+  transfersOut FinancialTransfer[] @relation("TransferFromReconciliation")
+  transfersIn  FinancialTransfer[] @relation("TransferToReconciliation")
+
+  @@index([businessId, accountId, statementDate])
+}
+
+model FinancialTransfer {
+  id                   String                   @id @default(cuid())
+  business             Business                 @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  businessId           String
+  fromAccount          FinancialAccount         @relation("TransferFromAccount", fields: [fromAccountId], references: [id], onDelete: Restrict)
+  fromAccountId        String
+  toAccount            FinancialAccount         @relation("TransferToAccount", fields: [toAccountId], references: [id], onDelete: Restrict)
+  toAccountId          String
+  fromReconciliation   FinancialReconciliation? @relation("TransferFromReconciliation", fields: [fromReconciliationId], references: [id], onDelete: SetNull)
+  fromReconciliationId String?
+  toReconciliation     FinancialReconciliation? @relation("TransferToReconciliation", fields: [toReconciliationId], references: [id], onDelete: SetNull)
+  toReconciliationId   String?
+  amount               Decimal                  @db.Decimal(18, 2)
+  transferDate         DateTime                 @default(now())
+  reference            String?
+  note                 String?
+  userId               String?
+  createdAt            DateTime                 @default(now())
+
+  @@index([businessId, transferDate])
+  @@index([fromAccountId, transferDate])
+  @@index([toAccountId, transferDate])
+}
+
+// A Payment records money received; a Receipt is the printable/issuable document for it.
+model Payment {
+  id               String                   @id @default(cuid())
+  business         Business                 @relation(fields: [businessId], references: [id])
+  businessId       String
+  customer         Customer                 @relation(fields: [customerId], references: [id])
+  customerId       String
+  invoice          Invoice?                 @relation(fields: [invoiceId], references: [id])
+  invoiceId        String?
+  financialAccount FinancialAccount?        @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  accountId        String?
+  reconciliation   FinancialReconciliation? @relation(fields: [reconciliationId], references: [id], onDelete: SetNull)
+  reconciliationId String?
+  method           PaymentMethod
+  currency         Currency
+  exchangeRate     Decimal                  @db.Decimal(18, 6)
+  amount           Decimal                  @db.Decimal(18, 2)
+  baseAmount       Decimal                  @db.Decimal(18, 2)
+  paidAt           DateTime                 @default(now())
+  createdAt        DateTime                 @default(now())
+
+  receipt Receipt?
+
+  @@index([businessId, paidAt])
+  @@index([accountId, paidAt])
+}
+
+model Receipt {
+  id         String   @id @default(cuid())
+  business   Business @relation(fields: [businessId], references: [id])
+  businessId String
+  customer   Customer @relation(fields: [customerId], references: [id])
+  customerId String
+  invoice    Invoice? @relation(fields: [invoiceId], references: [id])
+  invoiceId  String?
+  payment    Payment  @relation(fields: [paymentId], references: [id])
+  paymentId  String   @unique
+  reference  String // e.g. REC-2026-0001
+  issuedAt   DateTime @default(now())
+
+  @@unique([businessId, reference])
+  @@index([businessId, issuedAt])
+}
+
+// ─────────────────────────────────────────────────────────────
+// EXPENSES
+// ─────────────────────────────────────────────────────────────
+
+model ExpenseCategory {
+  id         String    @id @default(cuid())
+  business   Business  @relation(fields: [businessId], references: [id])
+  businessId String
+  name       String
+  expenses   Expense[]
+
+  @@unique([businessId, name])
+}
+
+model Expense {
+  id               String                   @id @default(cuid())
+  business         Business                 @relation(fields: [businessId], references: [id])
+  businessId       String
+  category         ExpenseCategory?         @relation(fields: [categoryId], references: [id])
+  categoryId       String?
+  financialAccount FinancialAccount?        @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  accountId        String?
+  reconciliation   FinancialReconciliation? @relation(fields: [reconciliationId], references: [id], onDelete: SetNull)
+  reconciliationId String?
+  description      String
+  currency         Currency
+  exchangeRate     Decimal                  @db.Decimal(18, 6)
+  amount           Decimal                  @db.Decimal(18, 2)
+  baseAmount       Decimal                  @db.Decimal(18, 2)
+  incurredAt       DateTime                 @default(now())
+  createdAt        DateTime                 @default(now())
+
+  @@index([businessId, incurredAt])
+  @@index([businessId, categoryId])
+  @@index([accountId, incurredAt])
+}
